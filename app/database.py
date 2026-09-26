@@ -335,6 +335,78 @@ CREATE TABLE IF NOT EXISTS dossier_events (
     occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_events_dossier ON dossier_events(dossier_id, id);
+
+CREATE TABLE IF NOT EXISTS evidence_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    evidence_code TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL CHECK(source_kind IN ('public_document','experiment_log','search_opinion')),
+    source_reference TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_digest TEXT NOT NULL UNIQUE,
+    captured_at TEXT NOT NULL,
+    imported_by INTEGER NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    subject_kind TEXT NOT NULL CHECK(subject_kind IN ('disclosure','patent_family')),
+    subject_reference TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('draft','submitted','archived')),
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    submitted_at TEXT,
+    archived_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_packages_subject ON evidence_packages(subject_kind, subject_reference);
+
+CREATE TABLE IF NOT EXISTS evidence_package_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    evidence_id INTEGER NOT NULL REFERENCES evidence_nodes(id),
+    position INTEGER NOT NULL,
+    citation_scope TEXT NOT NULL,
+    interpretation TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    prev_entry_digest TEXT NOT NULL,
+    entry_digest TEXT NOT NULL UNIQUE,
+    import_key TEXT NOT NULL,
+    appended_by INTEGER NOT NULL REFERENCES users(id),
+    appended_at TEXT NOT NULL,
+    UNIQUE(package_id, position),
+    UNIQUE(package_id, import_key)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_entries_package ON evidence_package_entries(package_id, position);
+CREATE INDEX IF NOT EXISTS idx_evidence_entries_node ON evidence_package_entries(evidence_id);
+
+CREATE TABLE IF NOT EXISTS evidence_objections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    objection_code TEXT NOT NULL UNIQUE,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    entry_id INTEGER NOT NULL REFERENCES evidence_package_entries(id),
+    reason TEXT NOT NULL,
+    raised_by INTEGER NOT NULL REFERENCES users(id),
+    raised_at TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('pending','upheld','dismissed')),
+    resolution TEXT,
+    decided_by INTEGER REFERENCES users(id),
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_objections_package ON evidence_objections(package_id, state);
+
+CREATE TABLE IF NOT EXISTS evidence_package_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    event_type TEXT NOT NULL,
+    actor_user_id INTEGER REFERENCES users(id),
+    details_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_events_package ON evidence_package_events(package_id, id);
 """
 
 PERMISSIONS = [
@@ -353,6 +425,9 @@ PERMISSIONS = [
     ("approvals.decide", "审批高风险操作", "approvals", "decide"),
     ("vaults.read_sensitive", "查看精确密级库位", "vaults", "read_sensitive"),
     ("incidents.manage", "管理泄密事件", "incidents", "manage"),
+    ("evidence.read", "查看新颖性证据包", "evidence", "read"),
+    ("evidence.write", "维护证据包并导入证据", "evidence", "write"),
+    ("evidence.adjudicate", "裁决证据异议与归档", "evidence", "adjudicate"),
 ]
 
 
@@ -432,10 +507,11 @@ def init_db() -> None:
             "dossier_manager": [
                 "dossiers.read", "dossiers.write", "dossiers.disclose", "dossiers.dispose",
                 "access_loans.manage", "inventory_review.manage", "incidents.manage",
+                "evidence.read", "evidence.write", "evidence.adjudicate",
             ],
-            "researcher": ["dossiers.read", "dossiers.disclose"],
-            "approver": ["dossiers.read", "approvals.decide"],
-            "auditor": ["dossiers.read", "audit.read"],
+            "researcher": ["dossiers.read", "dossiers.disclose", "evidence.read", "evidence.write"],
+            "approver": ["dossiers.read", "approvals.decide", "evidence.read", "evidence.adjudicate"],
+            "auditor": ["dossiers.read", "audit.read", "evidence.read"],
         }
         for role_code, permission_codes in role_permissions.items():
             role_id = connection.execute("SELECT id FROM roles WHERE code=?", (role_code,)).fetchone()[0]
