@@ -36,11 +36,26 @@ def command_smoke() -> None:
             raise SystemExit(1)
 
 
+def command_verify_evidence() -> None:
+    init_db()
+    from app.evidence.verification import build_report
+
+    report = build_report(get_connection())
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if not report["ok"]:
+        raise SystemExit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="知识产权档案服务维护命令")
-    parser.add_argument("command", choices=("init-db", "check-db", "smoke"))
+    parser.add_argument("command", choices=("init-db", "check-db", "smoke", "verify-evidence"))
     args = parser.parse_args()
-    {"init-db": command_init, "check-db": command_check, "smoke": command_smoke}[args.command]()
+    {
+        "init-db": command_init,
+        "check-db": command_check,
+        "smoke": command_smoke,
+        "verify-evidence": command_verify_evidence,
+    }[args.command]()
 
 
 if __name__ == "__main__":

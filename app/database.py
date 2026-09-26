@@ -335,6 +335,107 @@ CREATE TABLE IF NOT EXISTS dossier_events (
     occurred_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_events_dossier ON dossier_events(dossier_id, id);
+
+CREATE TABLE IF NOT EXISTS evidence_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_kind TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    title TEXT NOT NULL,
+    published_at TEXT,
+    content_json TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    idempotency_key TEXT,
+    imported_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_kind, source_ref),
+    UNIQUE(idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS evidence_packages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_code TEXT NOT NULL UNIQUE,
+    subject_kind TEXT NOT NULL,
+    subject_ref TEXT NOT NULL,
+    title TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','submitted','archived')),
+    head_digest TEXT,
+    submitted_at TEXT,
+    submitted_by INTEGER REFERENCES users(id),
+    archived_at TEXT,
+    archived_by INTEGER REFERENCES users(id),
+    archive_digest TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_packages_subject ON evidence_packages(subject_kind, subject_ref);
+
+CREATE TABLE IF NOT EXISTS package_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    evidence_id INTEGER NOT NULL REFERENCES evidence_items(id),
+    seq INTEGER NOT NULL,
+    entry_kind TEXT NOT NULL DEFAULT 'primary' CHECK(entry_kind IN ('primary','supplement')),
+    quote_range TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT,
+    appended_by INTEGER REFERENCES users(id),
+    prev_hash TEXT NOT NULL,
+    entry_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(package_id, seq),
+    UNIQUE(package_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_package_entries_evidence ON package_entries(evidence_id);
+
+CREATE TABLE IF NOT EXISTS evidence_challenges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    entry_id INTEGER REFERENCES package_entries(id),
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','upheld','amended','rejected','withdrawn')),
+    raised_by INTEGER NOT NULL REFERENCES users(id),
+    raised_at TEXT NOT NULL,
+    decided_by INTEGER REFERENCES users(id),
+    decided_at TEXT,
+    decision_note TEXT NOT NULL DEFAULT '',
+    resolution_entry_id INTEGER REFERENCES package_entries(id),
+    idempotency_key TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(package_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_challenges_package ON evidence_challenges(package_id, id);
+
+CREATE TABLE IF NOT EXISTS evidence_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    evidence_id INTEGER NOT NULL REFERENCES evidence_items(id),
+    subject_kind TEXT NOT NULL,
+    subject_ref TEXT NOT NULL,
+    interpretation TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    created_by INTEGER REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(package_id, evidence_id, subject_kind, subject_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_bindings_subject ON evidence_bindings(subject_kind, subject_ref);
+
+CREATE TABLE IF NOT EXISTS package_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id INTEGER NOT NULL REFERENCES evidence_packages(id),
+    event_type TEXT NOT NULL,
+    actor_user_id INTEGER REFERENCES users(id),
+    summary TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_package_events_package ON package_events(package_id, id);
 """
 
 PERMISSIONS = [
@@ -353,6 +454,12 @@ PERMISSIONS = [
     ("approvals.decide", "审批高风险操作", "approvals", "decide"),
     ("vaults.read_sensitive", "查看精确密级库位", "vaults", "read_sensitive"),
     ("incidents.manage", "管理泄密事件", "incidents", "manage"),
+    ("evidence.read", "查看证据包", "evidence", "read"),
+    ("evidence.write", "维护证据与证据包", "evidence", "write"),
+    ("evidence.challenge", "提出证据异议", "evidence", "challenge"),
+    ("evidence.decide", "裁决证据异议", "evidence", "decide"),
+    ("evidence.archive", "归档证据包", "evidence", "archive"),
+    ("evidence.verify", "校验证据链完整性", "evidence", "verify"),
 ]
 
 
@@ -432,10 +539,11 @@ def init_db() -> None:
             "dossier_manager": [
                 "dossiers.read", "dossiers.write", "dossiers.disclose", "dossiers.dispose",
                 "access_loans.manage", "inventory_review.manage", "incidents.manage",
+                "evidence.read", "evidence.write", "evidence.challenge", "evidence.archive", "evidence.verify",
             ],
-            "researcher": ["dossiers.read", "dossiers.disclose"],
-            "approver": ["dossiers.read", "approvals.decide"],
-            "auditor": ["dossiers.read", "audit.read"],
+            "researcher": ["dossiers.read", "dossiers.disclose", "evidence.read", "evidence.challenge"],
+            "approver": ["dossiers.read", "approvals.decide", "evidence.read", "evidence.decide"],
+            "auditor": ["dossiers.read", "audit.read", "evidence.read", "evidence.verify"],
         }
         for role_code, permission_codes in role_permissions.items():
             role_id = connection.execute("SELECT id FROM roles WHERE code=?", (role_code,)).fetchone()[0]
